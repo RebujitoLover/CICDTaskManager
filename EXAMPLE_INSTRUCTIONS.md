@@ -7,6 +7,8 @@ This exercise walks you through building a CI/CD pipeline step by step. You star
 - Basic Git knowledge
 - Git installed locally
 
+> **Note on `git push`:** All push commands below use `mygithub` (double remote). If you chose the fork option, replace `mygithub` with `origin` in every push command.
+
 ---
 
 ## Step 1 — Get your own copy of the repository
@@ -59,25 +61,14 @@ Alternatively, you can **fork** the repository directly from GitHub:
    ```bash
    git add README.md
    git commit -m "Set badge URLs"
-   git push -u mygithub main       # if using double remote
-   # git push origin main           # if using fork
+   git push -u mygithub main
    ```
 
 Go to your repository on GitHub and open the **README** tab. You will see the badges — they will show as failing or unknown because no workflow files exist yet. That is expected. They will turn green as you add each workflow in the steps below.
 
 ---
 
-## Step 2 — Create the workflows directory
-
-All GitHub Actions workflow files live in `.github/workflows/`. Create this directory:
-
-```bash
-mkdir -p .github/workflows
-```
-
----
-
-## Step 3 — Workflow 1: Compile
+## Step 2 — Workflow 1: Compile
 
 **What it does:** Checks out the code and compiles it with Maven. This is the fastest feedback: if the code doesn't compile, this workflow fails immediately.
 
@@ -117,7 +108,7 @@ Go to the **Actions** tab and watch the `Compile` job run. Once it passes, the *
 
 ---
 
-## Step 4 — Workflow 2: Test
+## Step 3 — Workflow 2: Test
 
 **What it does:** Runs all unit tests (files matching `*Test.java`) with Maven Surefire. Uploads the Surefire XML reports as an artifact so they are available from the run summary page.
 
@@ -162,9 +153,126 @@ git push mygithub main
 
 ---
 
-## Step 5 — Workflow 3: Build
+## Step 4 — Workflow 3: Multi-job pipeline ⭐
 
-**What it does:** Compiles, runs tests, and packages the project into a JAR. Also generates Javadoc and uploads both as artifacts.
+**What it does:** Combines compile, test, build and integration test as **separate jobs** connected with `needs:`. This is the most interesting workflow because it shows the dependency graph visually in the Actions tab.
+
+Create `.github/workflows/ci-multi-job.yml`:
+
+```yaml
+name: CI (Multi Job)
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+
+jobs:
+  compile:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: maven
+      - name: Compile
+        run: mvn compile --batch-mode
+
+  test:
+    runs-on: ubuntu-latest
+    needs: compile
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: maven
+      - name: Run unit tests
+        run: mvn test --batch-mode
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: multi-test-results
+          path: target/surefire-reports/
+
+  build:
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: maven
+      - name: Build JAR
+        run: mvn -B clean package
+      - name: Upload JAR artifact
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: multi-app-jar
+          path: target/*.jar
+
+  integration-test:
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: maven
+      - name: Run integration tests
+        run: mvn integration-test --batch-mode
+```
+
+```bash
+git add .github/workflows/ci-multi-job.yml
+git commit -m "Add multi-job CI workflow"
+git push mygithub main
+```
+
+Go to the **Actions** tab and look at the `CI (Multi Job)` run. You will see the **dependency graph**: `compile → test → build → integration-test`. Click on each job to inspect its logs.
+
+---
+
+## Step 5 — Break the pipeline
+
+Introduce a compile error and push to observe which jobs fail and which are skipped:
+
+```bash
+# Add a syntax error in any .java file (e.g., remove a semicolon), then:
+git add .
+git commit -m "Introduce compile error"
+git push mygithub main
+```
+
+Watch the `ci-multi-job.yml` run: `compile` will fail and all jobs that depend on it (`test`, `build`, `integration-test`) will be **skipped automatically**. This is the **fail fast** pattern in action.
+
+**Revert the change** and push again to restore the green state:
+```bash
+git checkout -- .
+git commit --allow-empty -m "Revert compile error"
+git push mygithub main
+```
+
+---
+
+## Optional steps (complete at home)
+
+The following steps extend the pipeline. Complete them after class to practice on your own.
+
+---
+
+## Step 6 (optional) — Workflow 4: Build
+
+**What it does:** Compiles, runs tests, and packages the project into a JAR in a single job. Also generates Javadoc and uploads both as artifacts.
 
 Create `.github/workflows/build.yml`:
 
@@ -199,13 +307,13 @@ jobs:
       - name: Upload JAR artifact
         uses: actions/upload-artifact@v4
         with:
-          name: app-jar
+          name: build-app-jar
           path: target/*.jar
 
       - name: Upload JavaDoc artifact
         uses: actions/upload-artifact@v4
         with:
-          name: javadoc
+          name: build-javadoc
           path: target/site/apidocs
 ```
 
@@ -219,7 +327,7 @@ After it passes, download the JAR from the run summary and inspect it.
 
 ---
 
-## Step 6 — Workflow 4: Integration Test
+## Step 7 (optional) — Workflow 5: Integration Test
 
 **What it does:** Runs Maven's `integration-test` lifecycle phase, which picks up test files matching `*IT.java` (Mockito-based top-down tests in `src/test/.../integration/`).
 
@@ -256,7 +364,7 @@ git push mygithub main
 
 ---
 
-## Step 7 — Workflow 5: Javadoc
+## Step 8 (optional) — Workflow 6: Javadoc
 
 **What it does:** Generates the Javadoc API documentation independently from the build and uploads it as an artifact.
 
@@ -287,7 +395,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: javadoc
+          name: javadoc-site
           path: target/site/apidocs/
 ```
 
@@ -297,17 +405,13 @@ git commit -m "Add javadoc workflow"
 git push mygithub main
 ```
 
-All five badges in the README should now be green.
+All five per-stage badges in the README should now be green.
 
 ---
 
-## Step 8 — Single Job vs Multi Job
+## Step 9 (optional) — Single-job pipeline
 
-Now that you understand the individual workflows, compare two alternative approaches.
-
-### Option A — Single Job
-
-All stages run sequentially as steps within one job. Simpler structure, single badge.
+**What it does:** All stages run sequentially as steps within one job. Compare with the multi-job approach from Step 4.
 
 Create `.github/workflows/ci-single-job.yml`:
 
@@ -350,155 +454,42 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: test-results
+          name: single-test-results
           path: target/surefire-reports/
 
       - name: Upload JAR artifact
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: app-jar
+          name: single-app-jar
           path: target/*.jar
-```
-
-### Option B — Multi Job
-
-Each stage is an independent job with explicit `needs:` dependencies. Compile must pass before Test runs; Test must pass before Build; Build before Integration Test. Coverage and Javadoc run in parallel after their respective dependencies.
-
-Create `.github/workflows/ci-multi-job.yml`:
-
-```yaml
-name: CI (Multi Job)
-
-on:
-  push:
-    branches: [ main ]
-  pull_request:
-
-jobs:
-  compile:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: "21"
-          cache: maven
-      - name: Compile
-        run: mvn compile --batch-mode
-
-  test:
-    runs-on: ubuntu-latest
-    needs: compile
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: "21"
-          cache: maven
-      - name: Run unit tests
-        run: mvn test --batch-mode
-      - name: Upload test results
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: test-results
-          path: target/surefire-reports/
-
-  build:
-    runs-on: ubuntu-latest
-    needs: test
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: "21"
-          cache: maven
-      - name: Build JAR
-        run: mvn -B clean package
-      - name: Upload JAR artifact
-        if: success()
-        uses: actions/upload-artifact@v4
-        with:
-          name: app-jar
-          path: target/*.jar
-
-  integration-test:
-    runs-on: ubuntu-latest
-    needs: build
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: "21"
-          cache: maven
-      - name: Run integration tests
-        run: mvn integration-test --batch-mode
-
-  coverage:
-    runs-on: ubuntu-latest
-    needs: test
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: "21"
-          cache: maven
-      - name: Run JaCoCo coverage
-        run: mvn test -P coverage --batch-mode
-      - name: Upload JaCoCo report
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: jacoco-report
-          path: target/site/jacoco/
-
-  javadoc:
-    runs-on: ubuntu-latest
-    needs: compile
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: "21"
-          cache: maven
-      - name: Generate Javadoc
-        run: mvn javadoc:javadoc --batch-mode
-      - name: Upload Javadoc
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: javadoc
-          path: target/site/apidocs/
 ```
 
 ```bash
-git add .github/workflows/ci-single-job.yml .github/workflows/ci-multi-job.yml
-git commit -m "Add single-job and multi-job CI workflows"
+git add .github/workflows/ci-single-job.yml
+git commit -m "Add single-job CI workflow"
 git push mygithub main
 ```
 
-Go to the **Actions** tab and compare:
+Go to the **Actions** tab and compare both CI workflows:
 - In `CI (Single Job)`, all steps are listed inside a single job node.
-- In `CI (Multi Job)`, the job graph shows the dependency chain visually. If `compile` fails, all downstream jobs are skipped automatically.
+- In `CI (Multi Job)`, the job graph shows the dependency chain visually.
 
 ---
 
-## Step 9 — Break the pipeline (optional)
+## Step 10 (optional) — Add coverage and javadoc to the multi-job pipeline
 
-Introduce a compile error and push to observe which jobs fail and which are skipped:
+**Challenge:** Extend `ci-multi-job.yml` by adding two new jobs:
 
-```bash
-# Add a syntax error in any .java file, then:
-git add .
-git commit -m "Introduce compile error"
-git push mygithub main
+1. **`coverage`** — depends on `test`, runs `mvn test -P coverage --batch-mode`, and uploads the JaCoCo report from `target/site/jacoco/`.
+2. **`javadoc`** — depends on `compile`, runs `mvn javadoc:javadoc --batch-mode`, and uploads the generated site from `target/site/apidocs/`.
+
+Both jobs should run **in parallel** with the rest of the pipeline. The resulting graph should look like:
+
+```text
+compile ──► test ──► build ──► integration-test
+              └──► coverage   (in parallel)
+compile ──► javadoc           (in parallel)
 ```
 
-Watch the `ci-multi-job.yml` run: `compile` will fail and all jobs that `needs: compile` will be skipped. Revert the change and push again to restore the green state.
+> Hint: use `needs: test` for coverage and `needs: compile` for javadoc. Remember to use unique artifact names (e.g., `multi-jacoco-report`, `multi-javadoc`).
