@@ -90,7 +90,7 @@ mvn javadoc:javadoc
 ```
 
 ## Main Dependencies
-- Java 21+
+- Java 21
 - Maven 3.9+
 - JUnit Jupiter 6.0.3
 - Mockito 5.23.0 (core + mockito-junit-jupiter)
